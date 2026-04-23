@@ -94,6 +94,10 @@ let interest = 0;
 let principal = 0;
 
 transactions.forEach(tx => {
+
+  // 🔥 FIX: skip paid transactions
+  if (tx.status === 'paid') return;
+
   let totalInterest = tx.base_interest;
 
   tx.extensions.forEach(ext => {
@@ -196,21 +200,34 @@ exports.markAsPaid = async (req, res) => {
       const { name } = req.params;
   
       const transactions = await Transaction.find({
-        person_name: name
+        person_name: { $regex: new RegExp(`^${name}$`, 'i') }
       }).sort({ createdAt: -1 });
   
       let principal = 0;
-      let interest = 0;
+let interest = 0;
+let incoming = 0;   // ✅ ADD
+let outgoing = 0;   // ✅ ADD
   
       transactions.forEach(tx => {
+
+        if (tx.status === 'paid') return; // 🔥 ignore paid
+      
         let totalInterest = tx.base_interest;
-  
+      
         tx.extensions.forEach(ext => {
           totalInterest += ext.extra_interest;
         });
-  
+      
+        const total = tx.principal_amount + totalInterest;
+      
         principal += tx.principal_amount;
-        interest += totalInterest;
+      
+        if (tx.type === 'incoming') {
+          incoming += total;
+          interest += totalInterest;
+        } else {
+          outgoing += total;
+        }
       });
   
       res.json({

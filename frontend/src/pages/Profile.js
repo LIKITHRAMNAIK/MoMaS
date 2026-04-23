@@ -109,7 +109,22 @@ function Profile() {
         borderRadius: 10,
         background: overdueDays > 0 ? '#ffcccc' : '#fff3cd'
       }}>
-        <p style={{ color: 'blue' }}>{tx.person_name}</p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+  <p style={{ fontWeight: 'bold', color: 'blue', margin: 0 }}>
+    {tx.person_name}
+  </p>
+
+  <span style={{
+    padding: '2px 8px',
+    borderRadius: '12px',
+    fontSize: '12px',
+    fontWeight: 'bold',
+    color: 'white',
+    background: tx.type === 'incoming' ? '#4CAF50' : '#F44336'
+  }}>
+    {tx.type === 'incoming' ? 'IN' : 'OUT'}
+  </span>
+</div>
 
         <p>Start: {new Date(tx.start_date).toDateString()}</p>
 
