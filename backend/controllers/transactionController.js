@@ -190,3 +190,70 @@ exports.markAsPaid = async (req, res) => {
       res.status(500).json({ message: error.message });
     }
   };
+
+  exports.getByPerson = async (req, res) => {
+    try {
+      const { name } = req.params;
+  
+      const transactions = await Transaction.find({
+        person_name: name
+      }).sort({ createdAt: -1 });
+  
+      let principal = 0;
+      let interest = 0;
+  
+      transactions.forEach(tx => {
+        let totalInterest = tx.base_interest;
+  
+        tx.extensions.forEach(ext => {
+          totalInterest += ext.extra_interest;
+        });
+  
+        principal += tx.principal_amount;
+        interest += totalInterest;
+      });
+  
+      res.json({
+        transactions,
+        summary: {
+          principal,
+          interest,
+          net: principal + interest
+        }
+      });
+  
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  };
+
+  exports.updateTransaction = async (req, res) => {
+    try {
+      const { id } = req.params;
+  
+      const updated = await Transaction.findByIdAndUpdate(
+        id,
+        req.body,
+        { new: true }
+      );
+  
+      res.json(updated);
+  
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  };
+  
+  
+  exports.deleteTransaction = async (req, res) => {
+    try {
+      const { id } = req.params;
+  
+      await Transaction.findByIdAndDelete(id);
+  
+      res.json({ message: 'Deleted successfully' });
+  
+    } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  };
