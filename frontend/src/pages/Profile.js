@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import API from '../services/api';
 import { useNavigate } from 'react-router-dom';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const card = (color) => ({
   background: color,
@@ -80,6 +82,178 @@ function Profile() {
     filtered.sort((a, b) => new Date(a.due_date) - new Date(b.due_date));
   }
 
+  const calculateTotal = (tx, uptoIndex) => {
+    let totalInterest = tx.base_interest;
+  
+    for (let i = 0; i <= uptoIndex; i++) {
+      const ext = tx.extensions[i];
+  
+      if (ext.interest_paid) {
+        // keep principal + ONLY new interest
+        totalInterest = ext.extra_interest;
+      } else {
+        totalInterest += ext.extra_interest;
+      }
+    }
+  
+    return tx.principal_amount + totalInterest;
+  };
+  const handleUserExport = () => {
+
+    const rows = [];
+  
+    const sortedData = data.transactions
+  .sort((a, b) => new Date(a.start_date) - new Date(b.start_date));
+  
+    sortedData.forEach((tx, index, arr) => {
+  
+      let totalInterest = tx.base_interest;
+      tx.extensions.forEach(ext => {
+        totalInterest += ext.extra_interest;
+      });
+  
+      const total = tx.principal_amount + totalInterest;
+  
+      // 🔹 ORIGINAL
+      rows.push({
+        Name: tx.person_name,
+        Type: tx.type,
+        Stage: 'Original',
+        Principal: tx.principal_amount.toLocaleString('en-IN'),
+        Start: new Date(tx.start_date).toLocaleDateString('en-GB'),
+        Due: new Date(
+          tx.extensions.length > 0
+            ? tx.extensions[0].old_due_date
+            : tx.due_date
+        ).toLocaleDateString('en-GB'),
+        Interest: tx.base_interest.toLocaleString('en-IN'),
+        Total: (tx.principal_amount + tx.base_interest).toLocaleString('en-IN'),
+        Status: tx.status
+      });
+  
+      // 🔹 EXTENSIONS
+      tx.extensions.forEach((ext, i) => {
+        rows.push({
+          Name: tx.person_name,
+          Type: tx.type,
+          Stage: `Extended ${i + 1}`,
+          Principal: tx.principal_amount.toLocaleString('en-IN'),
+          Start: new Date(ext.old_due_date).toLocaleDateString('en-GB'),
+          Due: new Date(
+            i === tx.extensions.length - 1
+              ? tx.due_date
+              : tx.extensions[i + 1].old_due_date
+          ).toLocaleDateString('en-GB'),
+          Interest: ext.extra_interest.toLocaleString('en-IN'),
+          Total: calculateTotal(tx, i).toLocaleString('en-IN'),
+  Status: 'extended'
+        });
+      });
+  
+      // 🔥 EMPTY ROW PER TRANSACTION
+      const nextTx = arr[index + 1];
+      if (!nextTx || nextTx._id !== tx._id) {
+        rows.push({
+          Name: '',
+          Type: '',
+          Stage: '',
+          Principal: '',
+          Start: '',
+          Due: '',
+          Interest: '',
+          Status: ''
+        });
+      }
+  
+    });
+  
+    // 🔥 USER TOTAL ROW
+    let totalAmount = 0;
+  
+    data.transactions.forEach(tx => {
+      let totalInterest = tx.base_interest;
+      tx.extensions.forEach(ext => {
+        totalInterest += ext.extra_interest;
+      });
+  
+      totalAmount += tx.principal_amount + totalInterest;
+    });
+  
+    rows.push({
+      Name: 'TOTAL',
+      Type: '',
+      Stage: '',
+      Principal: '',
+      Start: '',
+      Due: '',
+      Interest: '',
+      Status: `₹${totalAmount.toLocaleString('en-IN')}`
+    });
+  
+    const csv =
+      "Name,Type,Stage,Principal,Start,Due,Interest,Total,Status\n" +
+      rows.map(r =>
+        Object.values(r)
+          .map(val => `"${val}"`)
+          .join(",")
+      ).join("\n");
+  
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = window.URL.createObjectURL(blob);
+  
+    const a = document.createElement("a");
+    a.href = url;
+  
+    const fileName = data.name || 'user';
+a.download = `${fileName}-transactions.csv`;
+  
+    a.click();
+  };
+
+  const handleUserPDF = () => {
+    const doc = new jsPDF();
+  
+    const rows = [];
+  
+    data.transactions.forEach(tx => {
+  
+      rows.push([
+        tx.person_name,
+        tx.type,
+        'Original',
+        tx.principal_amount.toLocaleString('en-IN'),
+        new Date(tx.start_date).toLocaleDateString('en-GB'),
+        new Date(tx.due_date).toLocaleDateString('en-GB'),
+        tx.base_interest.toLocaleString('en-IN'),
+        (tx.principal_amount + tx.base_interest).toLocaleString('en-IN'),
+tx.status
+      ]);
+  
+      tx.extensions.forEach((ext, i) => {
+        rows.push([
+          tx.person_name,
+          tx.type,
+          `Extended ${i + 1}`,
+          tx.principal_amount.toLocaleString('en-IN'),
+          new Date(ext.old_due_date).toLocaleDateString('en-GB'),
+          new Date(tx.due_date).toLocaleDateString('en-GB'),
+          ext.extra_interest.toLocaleString('en-IN'),
+calculateTotal(tx, i).toLocaleString('en-IN'),
+'extended'
+        ]);
+      });
+  
+      rows.push(['', '', '', '', '', '', '', '']);
+    });
+  
+    autoTable(doc, {
+      head: [['Name', 'Type', 'Stage', 'Principal', 'Start', 'Due', 'Interest', 'Total', 'Status']],
+      body: rows
+    });
+  
+    doc.save(`${name}-transactions.pdf`);
+  };
+
   const renderCard = (tx) => {
     let totalInterest = tx.base_interest;
 
@@ -102,6 +276,8 @@ function Profile() {
 
     const isExtended = tx.extensions.length > 0;
     const lastExt = tx.extensions[tx.extensions.length - 1];
+
+    
 
     return (
       <div key={tx._id} style={{
@@ -173,6 +349,28 @@ function Profile() {
   ⬅ Back to Dashboard
 </button>
       <h1>{name}'s Profile</h1>
+
+      <button
+  onClick={handleUserExport}
+  style={{
+    marginTop: 10,
+    marginBottom: 10,
+    padding: '8px 12px',
+    cursor: 'pointer'
+  }}
+>
+  Export This User
+</button>
+<button
+  onClick={handleUserPDF}
+  style={{
+    marginBottom: 10,
+    padding: '8px 12px',
+    cursor: 'pointer'
+  }}
+>
+  Export PDF
+</button>
 
       {/* 🔥 SUMMARY */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
