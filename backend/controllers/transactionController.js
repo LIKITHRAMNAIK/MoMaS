@@ -1,32 +1,29 @@
 const Transaction = require('../models/Transaction');
 
-exports.addTransaction = async (req, res) => {
-  try {
-    const {
-      person_name,
-      type,
-      principal_amount,
-      base_interest,
-      start_date,
-      due_date,
-      notes
-    } = req.body;
 
-    const transaction = new Transaction({
-      person_name,
-      type,
-      principal_amount,
-      base_interest,
-      start_date,
-      due_date,
-      notes
+const addTransaction = async (req, res) => {
+  try {
+    const tx = new Transaction({
+      person_name: req.body.person_name,
+      type: req.body.type,
+      transaction_type: req.body.transaction_type || 'rotation', // ✅ ADD THIS
+      principal_amount: req.body.principal_amount,
+      base_interest: req.body.base_interest,
+      start_date: req.body.start_date,
+      due_date: req.body.due_date,
+      notes: req.body.notes,
+      status: 'pending',
+      extensions: []
     });
 
-    await transaction.save();
-    res.status(201).json(transaction);
+    
 
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+    await tx.save();
+    res.json(tx);
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: 'Failed to add transaction' });
   }
 };
 
@@ -89,40 +86,47 @@ exports.getDashboard = async (req, res) => {
     const transactions = await Transaction.find();
 
     let incoming = 0;
-let outgoing = 0;
-let interest = 0;
-let principal = 0;
+    let outgoing = 0;
+    let principal = 0;
+    let interest = 0;
 
-transactions.forEach(tx => {
+    transactions.forEach(tx => {
 
-  // 🔥 FIX: skip paid transactions
-  if (tx.status === 'paid') return;
+      // 🔥 NORMAL (INSTALLMENT)
+      if (tx.transaction_type === 'normal') {
+        const paid = tx.paid_amount || 0;
 
-  let totalInterest = tx.base_interest;
+        if (tx.type === 'incoming') {
+          incoming += paid;
+        } else {
+          outgoing += paid;
+        }
 
-  tx.extensions.forEach(ext => {
-    totalInterest += ext.extra_interest;
-  });
+        principal += tx.principal_amount;
+        return;
+      }
 
-  const total = tx.principal_amount + totalInterest;
+      // 🔥 ROTATION / LOAN
+      const total = tx.principal_amount + tx.base_interest;
 
-  principal += tx.principal_amount;
+      if (tx.type === 'incoming') {
+        incoming += total;
+      } else {
+        outgoing += total;
+      }
 
-  if (tx.type === 'incoming') {
-    incoming += total;
-    interest += totalInterest;
-  } else {
-    outgoing += total;
-  }
-});
+      principal += tx.principal_amount;
+      interest += tx.base_interest;
 
-res.json({
-  incoming,
-  outgoing,
-  interest,
-  principal,
-  net: incoming - outgoing
-});
+    });
+
+    res.json({
+      incoming,
+      outgoing,
+      interest,
+      principal,
+      net: incoming - outgoing
+    });
 
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -148,7 +152,11 @@ exports.getByDateRange = async (req, res) => {
       let totalInterest = tx.base_interest;
 
       tx.extensions.forEach(ext => {
-        totalInterest += ext.extra_interest;
+        if (ext.interest_paid) {
+          totalInterest = ext.extra_interest;
+        } else {
+          totalInterest += ext.extra_interest;
+        }
       });
 
       const total = tx.principal_amount + totalInterest;
@@ -175,25 +183,48 @@ exports.getByDateRange = async (req, res) => {
 };
 
 exports.markAsPaid = async (req, res) => {
-    try {
-      const { id } = req.params;
-  
-      const transaction = await Transaction.findById(id);
-  
-      if (!transaction) {
-        return res.status(404).json({ message: 'Transaction not found' });
-      }
-  
-      transaction.status = 'paid';
-  
-      await transaction.save();
-  
-      res.json(transaction);
-  
-    } catch (error) {
-      res.status(500).json({ message: error.message });
+  try {
+    const { id } = req.params;
+    const { amount } = req.body;
+
+    const tx = await Transaction.findById(id);
+
+    if (!tx) {
+      return res.status(404).json({ message: 'Transaction not found' });
     }
-  };
+
+    // ✅ NORMAL → INSTALLMENT LOGIC
+    if (tx.transaction_type === 'normal') {
+      const remaining =
+  tx.principal_amount - (tx.paid_amount || 0);
+
+const pay = Math.min(Number(amount), remaining);
+
+tx.paid_amount = (tx.paid_amount || 0) + pay;
+
+console.log("PAY:", pay);
+console.log("TOTAL PAID:", tx.paid_amount);
+
+      // ✅ if fully paid → mark paid
+      if (tx.paid_amount >= tx.principal_amount) {
+        tx.status = 'paid';
+      }
+
+      await tx.save();
+      return res.json(tx);
+    }
+
+    // ✅ ROTATION → FULL PAYMENT
+    tx.status = 'paid';
+    await tx.save();
+
+    res.json(tx);
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: 'Error' });
+  }
+};
 
   exports.getByPerson = async (req, res) => {
     try {
@@ -213,10 +244,14 @@ let outgoing = 0;   // ✅ ADD
         if (tx.status === 'paid') return; // 🔥 ignore paid
       
         let totalInterest = tx.base_interest;
-      
-        tx.extensions.forEach(ext => {
-          totalInterest += ext.extra_interest;
-        });
+
+tx.extensions.forEach(ext => {
+  if (ext.interest_paid) {
+    totalInterest = ext.extra_interest;
+  } else {
+    totalInterest += ext.extra_interest;
+  }
+});
       
         const total = tx.principal_amount + totalInterest;
       
@@ -274,3 +309,16 @@ let outgoing = 0;   // ✅ ADD
       res.status(500).json({ message: error.message });
     }
   };
+
+  exports.addTransaction = async (req, res) => {
+  try {
+    const transaction = new Transaction(req.body);
+    await transaction.save();
+
+    res.status(201).json(transaction);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+module.exports = exports;

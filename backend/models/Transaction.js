@@ -20,10 +20,21 @@ const extensionSchema = new mongoose.Schema({
   date: {
     type: Date,
     default: Date.now
-  }
+  },
+  transaction_type: {
+  type: String,
+  default: 'rotation'
+}
 });
 
 const transactionSchema = new mongoose.Schema({
+
+  transaction_type: {
+  type: String,
+  enum: ['rotation', 'normal', 'loan'],
+  default: 'rotation'
+},
+
   person_name: {
     type: String,
     required: true
@@ -34,6 +45,10 @@ const transactionSchema = new mongoose.Schema({
     enum: ['incoming', 'outgoing'],
     required: true
   },
+paid_amount: {
+  type: Number,
+  default: 0
+},
 
   principal_amount: {
     type: Number,

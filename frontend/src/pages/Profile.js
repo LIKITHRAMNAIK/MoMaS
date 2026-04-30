@@ -4,6 +4,7 @@ import API from '../services/api';
 import { useNavigate } from 'react-router-dom';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { formatCurrency } from '../utils/format';
 
 const card = (color) => ({
   background: color,
@@ -50,9 +51,14 @@ function Profile() {
 
   data.transactions.forEach(tx => {
     let interest = tx.base_interest;
-    tx.extensions.forEach(ext => {
-      interest += ext.extra_interest;
-    });
+
+tx.extensions.forEach(ext => {
+  if (ext.interest_paid) {
+    interest = ext.extra_interest;
+  } else {
+    interest += ext.extra_interest;
+  }
+});
 
     const total = tx.principal_amount + interest;
 
@@ -109,7 +115,11 @@ function Profile() {
   
       let totalInterest = tx.base_interest;
       tx.extensions.forEach(ext => {
-        totalInterest += ext.extra_interest;
+        if (ext.interest_paid) {
+          totalInterest = ext.extra_interest;
+        } else {
+          totalInterest += ext.extra_interest;
+        }
       });
   
       const total = tx.principal_amount + totalInterest;
@@ -173,7 +183,11 @@ function Profile() {
     data.transactions.forEach(tx => {
       let totalInterest = tx.base_interest;
       tx.extensions.forEach(ext => {
-        totalInterest += ext.extra_interest;
+        if (ext.interest_paid) {
+          totalInterest = ext.extra_interest;
+        } else {
+          totalInterest += ext.extra_interest;
+        }
       });
   
       totalAmount += tx.principal_amount + totalInterest;
@@ -191,6 +205,7 @@ function Profile() {
     });
   
     const csv =
+      "💰 MoMaS - User Report\n\n" +
       "Name,Type,Stage,Principal,Start,Due,Interest,Total,Status\n" +
       rows.map(r =>
         Object.values(r)
@@ -212,7 +227,8 @@ a.download = `${fileName}-transactions.csv`;
 
   const handleUserPDF = () => {
     const doc = new jsPDF();
-  
+    doc.text(`${name} - Transaction Report`, 14, 15);
+
     const rows = [];
   
     data.transactions.forEach(tx => {
@@ -255,83 +271,115 @@ calculateTotal(tx, i).toLocaleString('en-IN'),
   };
 
   const renderCard = (tx) => {
-    let totalInterest = tx.base_interest;
 
-    if (tx.extensions.length > 0) {
-      const lastExt = tx.extensions[tx.extensions.length - 1];
-
-      if (lastExt.interest_paid) {
-        totalInterest = lastExt.extra_interest;
-      } else {
-        tx.extensions.forEach(ext => {
-          totalInterest += ext.extra_interest;
-        });
-      }
-    }
-
-    const total = tx.principal_amount + totalInterest;
-
-    const due = new Date(tx.due_date);
-    const overdueDays = Math.floor((today - due) / (1000 * 60 * 60 * 24));
-
-    const isExtended = tx.extensions.length > 0;
-    const lastExt = tx.extensions[tx.extensions.length - 1];
-
-    
-
+  // ✅ NORMAL CARD
+  if (tx.transaction_type === 'normal') {
     return (
       <div key={tx._id} style={{
         padding: 12,
         borderRadius: 10,
-        background: overdueDays > 0 ? '#ffcccc' : '#fff3cd'
+        background: '#e3f2fd'
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-  <p style={{ fontWeight: 'bold', color: 'blue', margin: 0 }}>
-    {tx.person_name}
-  </p>
 
-  <span style={{
-    padding: '2px 8px',
-    borderRadius: '12px',
-    fontSize: '12px',
-    fontWeight: 'bold',
-    color: 'white',
-    background: tx.type === 'incoming' ? '#4CAF50' : '#F44336'
-  }}>
-    {tx.type === 'incoming' ? 'IN' : 'OUT'}
-  </span>
-</div>
+        {/* HEADER */}
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <h4 style={{ margin: 0 }}>Normal</h4>
+
+          <span style={{
+            padding: '2px 8px',
+            borderRadius: '12px',
+            fontSize: '12px',
+            fontWeight: 'bold',
+            color: 'white',
+            background: tx.type === 'incoming' ? '#4CAF50' : '#F44336'
+          }}>
+            {tx.type === 'incoming' ? 'IN' : 'OUT'}
+          </span>
+        </div>
 
         <p>Start: {new Date(tx.start_date).toDateString()}</p>
 
-        <p>
-          Due:
-          {isExtended ? (
-            <>
-              <span style={{ textDecoration: 'line-through' }}>
-                {new Date(lastExt.old_due_date).toDateString()}
-              </span>
-              <span style={{ color: 'green', marginLeft: 5 }}>
-                {new Date(tx.due_date).toDateString()}
-              </span>
-            </>
-          ) : (
-            new Date(tx.due_date).toDateString()
-          )}
-        </p>
+        <p>Due: {new Date(tx.due_date).toDateString()}</p>
 
-        {overdueDays > 0 && (
-          <p style={{ color: 'red' }}>Overdue: {overdueDays} days</p>
+        {/* ✅ PAID BOX */}
+        {tx.status === 'paid' && (
+          <div style={{
+            background: '#4CAF50',
+            color: 'white',
+            padding: '5px 12px',
+            borderRadius: 8,
+            display: 'inline-block',
+            fontWeight: 'bold',
+            margin: '6px 0'
+          }}>
+            PAID
+          </div>
         )}
 
-        <p>{tx.status}</p>
-        <p>₹{tx.principal_amount}</p>
-        <p>Interest ₹{totalInterest}</p>
-        <p><b>Total ₹{total}</b></p>
+        <p><b>Total {formatCurrency(tx.principal_amount)}</b></p>
+
       </div>
     );
-  };
+  }
 
+  // ✅ ROTATION CARD (KEEP YOUR OLD LOGIC)
+  let totalInterest = tx.base_interest;
+
+  tx.extensions.forEach(ext => {
+    if (ext.interest_paid) {
+      totalInterest = ext.extra_interest;
+    } else {
+      totalInterest += ext.extra_interest;
+    }
+  });
+
+  const total = tx.principal_amount + totalInterest;
+
+  return (
+  <div key={tx._id} style={{
+    padding: 12,
+    borderRadius: 10,
+    background: '#fff3cd',
+    position: 'relative'   // ✅ IMPORTANT
+  }}>
+
+    {/* 🔥 IN / OUT BADGE (SAME AS DASHBOARD) */}
+    <span style={{
+      position: 'absolute',
+      top: 10,
+      right: 10,
+      background: tx.type === 'incoming' ? '#4CAF50' : '#f44336',
+      color: 'white',
+      padding: '4px 10px',
+      borderRadius: 12,
+      fontSize: 12,
+      fontWeight: 'bold'
+    }}>
+      {tx.type === 'incoming' ? 'IN' : 'OUT'}
+    </span>
+
+    {/* NAME */}
+    <p style={{ fontWeight: 'bold', color: 'blue' }}>
+      Rotation
+    </p>
+
+    {/* DATES */}
+    <p>Start: {new Date(tx.start_date).toDateString()}</p>
+    <p>Due: {new Date(tx.due_date).toDateString()}</p>
+
+    {/* DATA */}
+    <p>Status: {tx.status}</p>
+    <p>Principal {formatCurrency(tx.principal_amount)}</p>
+    <p>Interest {formatCurrency(totalInterest)}</p>
+    <p><b>Total {formatCurrency(total)}</b></p>
+
+  </div>
+);
+};
   return (
     <div style={{ padding: 20 }}>
       <button
@@ -374,10 +422,10 @@ calculateTotal(tx, i).toLocaleString('en-IN'),
 
       {/* 🔥 SUMMARY */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
-        <div style={card('#4CAF50')}>Incoming ₹{incoming}</div>
-        <div style={card('#F44336')}>Outgoing ₹{outgoing}</div>
+        <div style={card('#4CAF50')}>Incoming {formatCurrency(incoming)}</div>
+        <div style={card('#F44336')}>Outgoing {formatCurrency(outgoing)}</div>
         <div style={card(net >= 0 ? '#009688' : '#D32F2F')}>
-          Net ₹{net}
+          Net {formatCurrency(net)}
         </div>
       </div>
 

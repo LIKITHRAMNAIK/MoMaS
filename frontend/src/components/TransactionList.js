@@ -3,6 +3,9 @@ import API from '../services/api';
 import { useNavigate } from 'react-router-dom';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { formatCurrency } from '../utils/format';
+
+
 
 const getColor = (name) => {
   const colors = ['#e3f2fd', '#fce4ec', '#e8f5e9', '#fff3e0'];
@@ -11,13 +14,20 @@ const getColor = (name) => {
 
 function TransactionList({ refresh }) {
   const navigate = useNavigate();
-
+  const [search, setSearch] = useState('');
   const [data, setData] = useState([]);
   const [selectedName, setSelectedName] = useState('all');
+  const [showAlert, setShowAlert] = useState(true);
+
+  const [confirmAction, setConfirmAction] = useState(null);
 
   const [filterType, setFilterType] = useState('upcoming');
   const [selectedMonth, setSelectedMonth] = useState('');
   const [sortType, setSortType] = useState('date');
+
+  const [payId, setPayId] = useState(null);
+const [payType, setPayType] = useState('');
+const [payAmount, setPayAmount] = useState(0);
 
   // ✅ EDIT STATE
   const [editId, setEditId] = useState(null);
@@ -40,6 +50,16 @@ function TransactionList({ refresh }) {
   const [showNoDuePopup, setShowNoDuePopup] = useState(false);
 
   const today = new Date();
+  const dueTransactions = data.filter(
+    tx => new Date(tx.due_date) < today && tx.status !== 'paid'
+  );
+  const upcomingTransactions = data
+  .filter(tx => {
+    const due = new Date(tx.due_date);
+    const diff = (due - today) / (1000 * 60 * 60 * 24);
+    return diff >= 0 && diff <= 7 && tx.status !== 'paid';
+  })
+  .sort((a, b) => new Date(a.due_date) - new Date(b.due_date));  // ✅ SORT ADDED
 
   const badgeStyle = (bg) => ({
     background: bg,
@@ -64,7 +84,11 @@ function TransactionList({ refresh }) {
     let totalInterest = tx.base_interest;
 
     tx.extensions.forEach(ext => {
-      totalInterest += ext.extra_interest;
+      if (ext.interest_paid) {
+        totalInterest = ext.extra_interest;
+      } else {
+        totalInterest += ext.extra_interest;
+      }
     });
 
     return sum + tx.principal_amount + totalInterest;
@@ -108,12 +132,58 @@ function TransactionList({ refresh }) {
     fetchData();
   };
 
-  const handleDelete = async (id) => {
-    if (window.confirm("Delete this transaction?")) {
-      await API.delete(`/delete/${id}`);
-      fetchData();
-    }
+  const handleDelete = (id) => {
+    setConfirmAction({
+      type: 'delete',
+      id
+    });
   };
+
+  const executeAction = async () => {
+  if (!confirmAction) return;
+
+  const { type, id, tx } = confirmAction;
+
+  // 🔥 GET TRANSACTION TYPE
+  const txData = data.find(t => t._id === id);
+  const transactionType = txData?.transaction_type || 'rotation';
+
+  // ✅ NORMAL → OPEN PAYMENT POPUP (NO CONFIRM)
+  if (type === 'paid' && transactionType === 'normal') {
+    setPayId(id);
+    setConfirmAction(null);
+    return;
+  }
+
+  try {
+    if (type === 'delete') {
+      await API.delete(`/delete/${id}`);
+    }
+
+    if (type === 'paid') {
+      await API.put(`/paid/${id}`);
+    }
+
+    if (type === 'extend') {
+      setExtendId(id);
+      setConfirmAction(null);
+      return;
+    }
+
+    if (type === 'edit') {
+      setEditId(id);
+      setConfirmAction(null);
+      return;
+    }
+
+    setConfirmAction(null);
+    fetchData();
+
+  } catch (err) {
+    console.log(err);
+    setConfirmAction(null);
+  }
+};
 
   const handleExport = () => {
 
@@ -195,7 +265,9 @@ if (
     });
   
     const csv =
-      "Name,Type,Stage,Principal,Start,Due,Interest,Total,Status\n" +
+  "💰 MoMaS - Money Management System\n" +
+  "Generated Report\n\n" +
+  "Name,Type,Stage,Principal,Start,Due,Interest,Total,Status\n" +
       rows.map(r =>
         Object.values(r)
           .map(val => `"${val}"`)
@@ -233,7 +305,11 @@ if (
   };
   const handleExportPDF = () => {
     const doc = new jsPDF();
-  
+    doc.setFontSize(16);
+    doc.text("💰 MoMaS - Money Report", 14, 15);
+    
+    doc.setFontSize(10);
+    doc.text("Generated Transactions Report", 14, 22);
     const rows = [];
   
     const filteredSortedData = [...data]
@@ -279,6 +355,7 @@ calculateTotal(tx, i).toLocaleString('en-IN'),
       });
   
     autoTable(doc, {
+      startY: 30,
       head: [['Name', 'Type', 'Stage', 'Principal', 'Start', 'Due', 'Interest', 'Total', 'Status']],
       body: rows
     });
@@ -300,7 +377,13 @@ calculateTotal(tx, i).toLocaleString('en-IN'),
   };
 
   // ✅ FILTER LOGIC
+  console.log("ALL DATA:", data);
   let filteredData = [...data];
+  if (search.trim() !== '') {
+    filteredData = filteredData.filter(tx =>
+      tx.person_name.toLowerCase().includes(search.toLowerCase())
+    );
+  }
 
 // FIRST filter by user
 if (selectedName !== 'all') {
@@ -320,13 +403,21 @@ if (selectedMonth) {
 }
 
 if (filterType === 'pending') {
-  filteredData = filteredData.filter(tx => tx.status !== 'paid');
+  filteredData = filteredData.filter(tx => {
+    if (tx.transaction_type === 'normal') {
+      return true;
+    }
+    return tx.status !== 'paid';
+  });
 }
 
 if (filterType === 'upcoming') {
-  filteredData = filteredData.filter(
-    tx => new Date(tx.due_date) >= today && tx.status !== 'paid'
-  );
+  filteredData = filteredData.filter(tx => {
+    if (tx.transaction_type === 'normal') {
+      return true; // ✅ always show normal
+    }
+    return new Date(tx.due_date) >= today && tx.status !== 'paid';
+  });
 }
 
   if (filterType === 'paid') {
@@ -352,22 +443,234 @@ if (filterType === 'upcoming') {
     filteredData.sort((a, b) => a.person_name.localeCompare(b.person_name));
   }
 
-  // ✅ CARD
-  const renderCard = (tx) => {
+  const renderDueCard = (tx) => {
     let totalInterest = tx.base_interest;
-
+  
     tx.extensions.forEach(ext => {
-      totalInterest += ext.extra_interest;
+      if (ext.interest_paid) {
+        totalInterest = ext.extra_interest;
+      } else {
+        totalInterest += ext.extra_interest;
+      }
     });
-
+  
     const total = tx.principal_amount + totalInterest;
-
+  
     const due = new Date(tx.due_date);
-    const overdueDays = Math.max(0, Math.floor((today - due) / (1000 * 60 * 60 * 24)));
+    const overdueDays = Math.floor((today - due) / (1000 * 60 * 60 * 24));
+    const type = (tx.transaction_type || 'rotation').toLowerCase();
+    const isNormal = type.includes('normal');
 
     return (
+
       
       <div
+        key={tx._id}
+        style={{
+          background: '#ffe5e5',
+          padding: '8px',
+          borderRadius: '10px',
+          border: '2px solid #f44336',
+          fontSize: '12px'
+        }}
+      >
+  <div
+    key={tx._id}
+    onClick={() => navigate(`/profile/${tx.person_name}`)}   // ✅ CLICKABLE
+    style={{
+      background: '#ffe5e5',
+      padding: '10px',
+      borderRadius: '12px',
+      border: '2px solid #f44336',
+      fontSize: '12px',
+      cursor: 'pointer',
+      transition: '0.2s'
+    }}
+    onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.03)'}
+    onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+  >
+
+    {/* 🔹 TOP ROW */}
+    <div style={{
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center'
+    }}>
+      <b style={{ fontSize: '15px' }}>{tx.person_name}</b>
+
+      <span style={{
+        background: tx.type === 'incoming' ? '#4CAF50' : '#F44336',
+        color: 'white',
+        padding: '2px 8px',
+        borderRadius: '10px',
+        fontSize: '11px',
+       padding: '3px 10px'
+      }}>
+        {tx.type === 'incoming' ? 'IN' : 'OUT'}
+      </span>
+    </div>
+
+    {/* 🔹 OVERDUE */}
+    <p style={{
+      color: 'red',
+      margin: '4px 0',
+      fontSize: '13px',
+fontWeight: '500'
+    }}>
+      ⚠ {overdueDays} days
+    </p>
+
+    {/* 🔹 DATES SAME ROW */}
+    <p style={{
+      fontSize: '12px',
+      margin: '4px 0'
+    }}>
+      {new Date(tx.start_date).toDateString()} -
+      <span style={{ color: 'red', marginLeft: 5 }}>
+        {new Date(tx.due_date).toDateString()}
+      </span>
+    </p>
+
+    {/* 🔹 TOTAL */}
+    <p style={{
+      textAlign: 'right',
+      fontWeight: 'bold',
+      fontSize: '18px',
+fontWeight: 'bold',
+      marginTop: '6px'
+    }}>
+      {formatCurrency(total)}
+    </p>
+
+  </div>
+      </div>
+    );
+  };
+  // ✅ CARD
+  const renderCard = (tx) => {
+  console.log("TX DATA:", tx);
+
+  // 🔥 FIX: decide type properly
+  const type = tx.transaction_type || 'rotation';
+
+  // ✅ NORMAL INSTALLMENT CARD
+  if (type === 'normal') {
+  const paid = tx.paid_amount || 0;
+  const total = tx.principal_amount;
+  const balance = total - paid;
+
+  const start = new Date(tx.start_date).toDateString();
+  const due = new Date(tx.due_date).toDateString();
+
+  return (
+    <div style={{
+      padding: 15,
+      borderRadius: 12,
+      background: '#e3f2fd',
+      position: 'relative'
+    }}>
+
+      {/* 🔥 TITLE + BADGE */}
+      <h4
+  style={{ marginBottom: 5, cursor: 'pointer', color: 'blue' }}
+  onClick={() => navigate(`/profile/${tx.person_name}`)}
+>
+  {tx.person_name}
+</h4>
+
+      <span style={{
+        position: 'absolute',
+        top: 10,
+        right: 10,
+        background: tx.type === 'incoming' ? '#4CAF50' : '#f44336',
+        color: 'white',
+        padding: '4px 10px',
+        borderRadius: 12,
+        fontSize: 12,
+        fontWeight: 'bold'
+      }}>
+        {tx.type === 'incoming' ? 'IN' : 'OUT'}
+      </span>
+
+      {/* 📅 DATE RANGE */}
+      <p style={{ margin: '8px 0' }}>
+        <span style={{ color: 'green', fontWeight: 'bold' }}>
+          {start}
+        </span>
+        {' - '}
+        <span style={{ color: 'red', fontWeight: 'bold' }}>
+          {due}
+        </span>
+      </p>
+
+      <hr />
+
+      {/* 💰 DATA */}
+      <p>Total: {formatCurrency(total)}</p>
+      <p>Paid: {formatCurrency(paid)}</p>
+      <p>Balance: {formatCurrency(balance)}</p>
+
+      {balance === 0 && (
+  <div style={{
+    background: '#4CAF50',
+    color: 'white',
+    padding: '5px 10px',
+    borderRadius: 8,
+    display: 'inline-block',
+    fontWeight: 'bold',
+    marginTop: 5
+  }}>
+    PAID
+  </div>
+)}
+
+      {/* 🔘 BUTTONS */}
+      <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+        <button onClick={() => setPayId(tx._id)}>Pay</button>
+
+        <button onClick={() => {
+          setEditId(tx._id);
+          setEditForm(tx);
+        }}>
+          Edit
+        </button>
+
+        <button onClick={() =>
+          setConfirmAction({ type: 'delete', id: tx._id })
+        }>
+          Delete
+        </button>
+      </div>
+
+    </div>
+  );
+}
+
+  // ================= ROTATION (OLD LOGIC) =================
+
+  let totalInterest = tx.base_interest;
+
+  tx.extensions.forEach(ext => {
+    if (ext.interest_paid) {
+      totalInterest = ext.extra_interest;
+    } else {
+      totalInterest += ext.extra_interest;
+    }
+  });
+
+  const total = tx.principal_amount + totalInterest;
+
+  const due = new Date(tx.due_date);
+  const overdueDays = Math.max(0, Math.floor((today - due) / (1000 * 60 * 60 * 24)));
+
+  let dueHistory = [tx.due_date];
+
+  tx.extensions.forEach(ext => {
+    dueHistory.push(ext.new_due_date);
+  });
+
+  return (
+    <div
   key={tx._id}
   style={{
     padding: '12px',
@@ -378,87 +681,311 @@ if (filterType === 'upcoming') {
         : tx.status === 'paid'
         ? '#e8f5e9'
         : '#fff3cd',
-        boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
-    fontSize: '14px',
-    transition: 'all 0.2s ease',
-    cursor: 'pointer'
-  }}
-  onMouseEnter={(e) => {
-    e.currentTarget.style.transform = 'translateY(-5px) scale(1.02)';
-    e.currentTarget.style.boxShadow = '0 8px 20px rgba(0,0,0,0.2)';
-  }}
-  onMouseLeave={(e) => {
-    e.currentTarget.style.transform = 'translateY(0) scale(1)';
-    e.currentTarget.style.boxShadow = '0 2px 6px rgba(0,0,0,0.1)';
+    boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
+
+    position: 'relative'   // 🔥 ADD THIS LINE
   }}
 >
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <p style={{ fontWeight: 'bold', color: 'blue', cursor: 'pointer', margin: 0 }}
-             onClick={() => navigate(`/profile/${tx.person_name}`)}>
-            {tx.person_name}
-          </p>
 
-          <span style={{
-            padding: '2px 8px',
-            borderRadius: '12px',
-            fontSize: '12px',
-            fontWeight: 'bold',
-            color: 'white',
-            background: tx.type === 'incoming' ? '#4CAF50' : '#F44336'
-          }}>
-            {tx.type === 'incoming' ? 'IN' : 'OUT'}
-          </span>
-        </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <h4
+  style={{ marginBottom: 5, cursor: 'pointer', color: 'blue' }}
+  onClick={() => navigate(`/profile/${tx.person_name}`)}
+>
+  {tx.person_name}
+</h4>
 
-        <p>Start: {new Date(tx.start_date).toDateString()}</p>
-
-<p>
-  Due:
-  {tx.extensions.length > 0 ? (
-    <>
-      <span style={{ textDecoration: 'line-through', marginLeft: 5 }}>
-        {new Date(tx.extensions[tx.extensions.length - 1].old_due_date).toDateString()}
-      </span>
-      <span style={{ color: 'green', marginLeft: 5 }}>
-        {new Date(tx.due_date).toDateString()}
-      </span>
-    </>
-  ) : (
-    new Date(tx.due_date).toDateString()
-  )}
-</p>
-
-        {overdueDays > 0 && (
-          <p style={{ color: 'red' }}>Overdue: {overdueDays} days</p>
-        )}
-
-        <p>Status: {tx.status}</p>
-        <p>₹{tx.principal_amount}</p>
-        <p>Interest ₹{totalInterest}</p>
-        <p><b>Total ₹{total}</b></p>
-
-        <button onClick={() => handlePaid(tx._id)}>Paid</button>
-        <button onClick={() => setExtendId(tx._id)}>Extend</button>
-        <button onClick={() => {
-  setEditId(tx._id);
-  setEditForm({
-    principal_amount: tx.principal_amount,
-    base_interest: tx.base_interest,
-    start_date: tx.start_date?.slice(0,10),
-    due_date: tx.due_date?.slice(0,10)
-  });
+        <span style={{
+  position: 'absolute',
+  top: 10,
+  right: 10,
+  background: tx.type === 'incoming' ? '#4CAF50' : '#f44336',
+  color: 'white',
+  padding: '4px 10px',
+  borderRadius: 12,
+  fontSize: 12,
+  fontWeight: 'bold'
 }}>
-  Edit
-</button>
-        <button onClick={() => handleDelete(tx._id)}>Delete</button>
+  {tx.type === 'incoming' ? 'IN' : 'OUT'}
+</span>
       </div>
-    );
-  };
 
+      <p><b>Start:</b> {new Date(tx.start_date).toDateString()}</p>
+
+      <div>
+        <b>Due:</b>
+        {dueHistory.map((date, i) => {
+          const last = i === dueHistory.length - 1;
+          return (
+            <p key={i}
+              style={{
+                color: last ? 'green' : 'red',
+                textDecoration: last ? 'none' : 'line-through'
+              }}>
+              {new Date(date).toDateString()}
+            </p>
+          );
+        })}
+      </div>
+
+      {overdueDays > 0 && (
+        <p style={{ color: 'red' }}>Overdue: {overdueDays} days</p>
+      )}
+
+      <p><b>Status:</b> {tx.status}</p>
+      <p><b>Principal:</b> {formatCurrency(tx.principal_amount)}</p>
+      <p><b>Interest:</b> {formatCurrency(totalInterest)}</p>
+      <p><b>Total {formatCurrency(total)}</b></p>
+
+      <button
+  onClick={() => {
+    const type = tx.transaction_type || 'rotation';
+
+    if (type === 'normal') {
+      // ✅ OPEN PAYMENT POPUP
+      setPayId(tx._id);
+    } else {
+      // ✅ NORMAL CONFIRM FLOW
+      setConfirmAction({ type: 'paid', id: tx._id });
+    }
+  }}
+>
+  {tx.transaction_type === 'normal' ? 'Pay' : 'Paid'}
+</button>
+
+      <button onClick={() =>
+        setConfirmAction({ type: 'extend', id: tx._id })
+      }>
+        Extend
+      </button>
+
+      <button onClick={() =>
+        setConfirmAction({ type: 'edit', id: tx._id, tx })
+      }>
+        Edit
+      </button>
+
+      <button onClick={() =>
+        setConfirmAction({ type: 'delete', id: tx._id })
+      }>
+        Delete
+      </button>
+
+    </div>
+  );
+};
+
+  const getConfirmMessage = () => {
+    if (!confirmAction) return '';
+  
+    if (confirmAction.type === 'delete') return 'Are you sure to Delete?';
+    // if (confirmAction.type === 'paid') return 'Are you sure to mark as Paid?';
+    if (confirmAction.type === 'paid') {
+
+  const txData = data.find(t => t._id === confirmAction.id);
+  const type = txData?.transaction_type || 'rotation';
+
+  // ❌ DO NOT SHOW CONFIRM FOR NORMAL
+  if (type === 'normal') {
+    return '';   // no message
+  }
+
+  return 'Are you sure to mark as Paid?';
+}
+    if (confirmAction.type === 'extend') return 'Are you sure to Extend?';
+    if (confirmAction.type === 'edit') return 'Are you sure to Edit?';
+  
+    return 'Are you sure?';
+  };
+ const normalData = data
+  .filter(tx => tx.transaction_type === 'normal')
+  .filter(tx => (tx.paid_amount || 0) < tx.principal_amount);
+
+const rotationData = filteredData
+  .filter(tx => tx.transaction_type !== 'normal')
+  .sort((a, b) => new Date(a.due_date) - new Date(b.due_date));
+
+  const handleInstallment = async () => {
+  if (!payAmount) {
+    alert("Enter amount");
+    return;
+  }
+
+  try {
+    await API.put(`/paid/${payId}`, {
+      amount: Number(payAmount)
+    });
+
+    alert("Payment successful ✅");
+
+    setPayAmount('');
+    setPayId(null);
+    fetchData();
+
+  } catch (err) {
+    console.log(err);
+    alert("Error ❌");
+  }
+};
+
+const handleFullPayment = async () => {
+  try {
+    const tx = data.find(t => t._id === payId);
+
+    const remaining =
+      Number(tx.principal_amount) - Number(tx.paid_amount || 0);
+
+    if (remaining <= 0) {
+      alert("Already fully paid");
+      return;
+    }
+
+    await API.put(`/paid/${payId}`, {
+      amount: remaining
+    });
+
+    alert("Full Payment Done ✅");
+
+    setPayId(null);
+    setPayType(null);
+
+    fetchData();
+
+  } catch (err) {
+    console.log(err);
+    alert("Error ❌");
+  }
+};
   return (
     
+    
     <div>
+{confirmAction && (() => {
+  const txData = data.find(t => t._id === confirmAction.id);
+  const type = txData?.transaction_type || 'rotation';
 
+  // ❌ DO NOT SHOW CONFIRM FOR NORMAL
+  if (confirmAction.type === 'paid' && type === 'normal') {
+    return null;
+  }
+
+  return (
+    <div
+      onClick={() => setConfirmAction(null)}
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        background: 'rgba(0,0,0,0.4)',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 2000
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'white',
+          padding: 20,
+          borderRadius: 10,
+          width: 300,
+          textAlign: 'center'
+        }}
+      >
+        <h3>{getConfirmMessage()}</h3>
+
+        <div style={{ marginTop: 15, display: 'flex', gap: 10, justifyContent: 'center' }}>
+          <button onClick={executeAction}>Confirm</button>
+          <button onClick={() => setConfirmAction(null)}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+})()}
+
+{payId && (
+  <div
+    onClick={() => {
+      setPayId(null);
+      setPayType('');
+    }}
+    style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      width: '100%',
+      height: '100%',
+      background: 'rgba(0,0,0,0.4)',
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      zIndex: 4000   // 👈 higher than alert
+    }}
+  >
+    <div
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        background: 'white',
+        padding: 20,
+        borderRadius: 10,
+        width: 300
+      }}
+    >
+
+      <h3>Payment</h3>
+
+      {!payType && (
+        <>
+          <button
+            style={{ width: '100%', marginBottom: 10 }}
+            onClick={() => setPayType('installment')}
+          >
+            Pay by Installment
+          </button>
+
+          <button
+            style={{ width: '100%' }}
+            onClick={() => setPayType('full')}
+          >
+            Full Payment
+          </button>
+        </>
+      )}
+
+      {payType === 'installment' && (
+        <>
+          <input
+            type="number"
+            placeholder="Enter amount"
+            value={payAmount || ''}
+            onChange={(e) => setPayAmount(e.target.value)}
+            style={{ width: '100%', marginBottom: 10 }}
+          />
+
+          <button
+  style={{ width: '100%' }}
+  onClick={handleInstallment}
+>
+  Confirm Installment
+</button>
+        </>
+      )}
+
+      {payType === 'full' && (
+        <button
+  style={{ width: '100%' }}
+  onClick={handleFullPayment}
+>
+  Confirm Full Payment
+</button>
+      )}
+
+    </div>
+  </div>
+)}
 {extendId && (
   <div
     onClick={() => setExtendId(null)}
@@ -619,6 +1146,182 @@ if (filterType === 'upcoming') {
     </div>
   </div>
 )}
+
+{showAlert && (dueTransactions.length > 0 || upcomingTransactions.length > 0) && (
+  <div style={{
+    position: 'fixed',
+    top: 60,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: 'white',
+    padding: '20px',
+    borderRadius: '12px',
+    boxShadow: '0 5px 20px rgba(0,0,0,0.3)',
+    zIndex: 3000,
+    width: '420px',
+    maxHeight: '70vh',
+    overflowY: 'auto'
+  }}>
+
+
+<h3 style={{ textAlign: 'center', marginBottom: 10 }}>
+  🚨 Alerts
+</h3>
+
+{/* 🔴 OVERDUE */}
+{dueTransactions.length > 0 && (
+  <>
+    <h4 style={{
+      color: '#f44336',
+      marginBottom: 8
+    }}>
+      🔴 Overdue
+    </h4>
+
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {dueTransactions.map(tx => {
+        let totalInterest = tx.base_interest;
+
+        tx.extensions.forEach(ext => {
+          if (ext.interest_paid) {
+            totalInterest = ext.extra_interest;
+          } else {
+            totalInterest += ext.extra_interest;
+          }
+        });
+
+        const total = tx.principal_amount + totalInterest;
+
+        const overdueDays = Math.floor(
+          (today - new Date(tx.due_date)) / (1000 * 60 * 60 * 24)
+        );
+
+        return (
+          <div
+            key={tx._id}
+            style={{
+              padding: '10px',
+              borderRadius: '10px',
+              background: '#ffe5e5',
+              border: '1px solid #f44336',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}
+          >
+            <div>
+              <b>{tx.person_name}</b>
+              <p style={{ margin: 0, fontSize: 12, color: 'red' }}>
+                ⚠ {overdueDays} days
+              </p>
+            </div>
+
+            <div style={{ textAlign: 'right' }}>
+              <p style={{ margin: 0, fontWeight: 'bold' }}>{formatCurrency(total)}</p>
+              <span style={{
+                background: tx.type === 'incoming' ? '#4CAF50' : '#F44336',
+                color: 'white',
+                padding: '2px 6px',
+                borderRadius: 6,
+                fontSize: 10
+              }}>
+                {tx.type === 'incoming' ? 'IN' : 'OUT'}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  </>
+)}
+
+{/* 🟡 UPCOMING */}
+{upcomingTransactions.length > 0 && (
+  <>
+    <h4 style={{
+      color: '#ff9800',
+      marginTop: 12,
+      marginBottom: 8
+    }}>
+      🟡 Upcoming (7 days)
+    </h4>
+
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {upcomingTransactions.map(tx => {
+        let totalInterest = tx.base_interest;
+
+        tx.extensions.forEach(ext => {
+          if (ext.interest_paid) {
+            totalInterest = ext.extra_interest;
+          } else {
+            totalInterest += ext.extra_interest;
+          }
+        });
+
+        const total = tx.principal_amount + totalInterest;
+        
+        return (
+
+          
+          <div
+            key={tx._id}
+            style={{
+              padding: '10px',
+              borderRadius: '10px',
+              background: '#fff3cd',
+              border: '1px solid #ff9800',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}
+          >
+            <div>
+              <b>{tx.person_name}</b>
+              <p style={{ margin: 0, fontSize: 12 }}>
+                {new Date(tx.due_date).toDateString()}
+              </p>
+            </div>
+
+            <div style={{ textAlign: 'right' }}>
+              <p style={{ margin: 0, fontWeight: 'bold' }}>{formatCurrency(total)}</p>
+              <span style={{
+                background: tx.type === 'incoming' ? '#4CAF50' : '#F44336',
+                color: 'white',
+                padding: '2px 6px',
+                borderRadius: 6,
+                fontSize: 10
+              }}>
+                {tx.type === 'incoming' ? 'IN' : 'OUT'}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  </>
+)}
+
+{/* CLOSE BUTTON */}
+<button
+  onClick={() => setShowAlert(false)}
+  style={{
+    marginTop: '15px',
+    width: '100%',
+    padding: '10px',
+    background: '#4CAF50',
+    color: 'white',
+    border: 'none',
+    borderRadius: '10px',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    fontSize: '14px'
+  }}
+>
+  Close
+</button>
+
+  </div>
+)}
       {/* 🔥 POPUP (ADD HERE — TOP INSIDE RETURN) */}
       {showNoDuePopup && (
         <div style={{
@@ -635,7 +1338,29 @@ if (filterType === 'upcoming') {
           🎉 No overdue payments
         </div>
       )}
-  
+
+{/* 🔴 AUTO DUE SECTION */}
+{dueTransactions.length > 0 && (
+  <div style={{ marginBottom: 15 }}>
+
+    <h3 style={{
+      color: '#f44336',
+      marginBottom: 8
+    }}>
+      ⚠ Overdue Payments
+    </h3>
+
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(5, 1fr)',   // ✅ 5 cards per row
+      gap: '10px'
+    }}>
+      {dueTransactions.map(renderDueCard)}
+    </div>
+
+  </div>
+)}
+      
       {/* 🔥 BADGES */}
       <div style={{
         display: 'flex',
@@ -690,19 +1415,33 @@ if (filterType === 'upcoming') {
 >
   Due: {dueCount}
 </span>
+{/* <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}></div> */}
       </div>
-  
-      {/* USER FILTER */}
-      <select onChange={(e) => setSelectedName(e.target.value)}>
-        <option value="all">All Users</option>
-        {names.slice(1).map(name => (
-          <option key={name} value={name}>{name}</option>
-        ))}
-      </select>
-  
-      {/* FILTER + SORT */}
+      
       <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
 
+  {/* 🔍 SEARCH */}
+  <input
+    type="text"
+    placeholder="Search by name..."
+    value={search}
+    onChange={(e) => setSearch(e.target.value)}
+    style={{
+      padding: '5px 10px',
+      borderRadius: 6,
+      border: '1px solid #ccc'
+    }}
+  />
+
+  {/* 👤 USER FILTER */}
+  <select onChange={(e) => setSelectedName(e.target.value)}>
+    <option value="all">All Users</option>
+    {names.slice(1).map(name => (
+      <option key={name} value={name}>{name}</option>
+    ))}
+  </select>
+
+  {/* 📊 STATUS FILTER */}
   <select onChange={(e) => setFilterType(e.target.value)}>
     <option value="upcoming">Upcoming</option>
     <option value="pending">Pending</option>
@@ -711,31 +1450,31 @@ if (filterType === 'upcoming') {
     <option value="due">Overdue</option>
   </select>
 
+  {/* 🔽 SORT */}
   <select onChange={(e) => setSortType(e.target.value)}>
     <option value="date">Sort by Date</option>
     <option value="name">Sort by Name</option>
   </select>
 
-  {/* ✅ MONTH FILTER */}
+  {/* 📅 MONTH */}
   <input
     type="month"
     onChange={(e) => setSelectedMonth(e.target.value)}
   />
 
-  {/* ✅ EXPORT BUTTON */}
-  <button
-    onClick={handleExport}
-    style={{ padding: '5px 10px', cursor: 'pointer' }}
-  >
+  {/* 📄 EXPORT */}
+  <button onClick={handleExport}>
     Export CSV
   </button>
-<button
-  onClick={handleExportPDF}
-  style={{ padding: '5px 10px', cursor: 'pointer' }}
->
-  Export PDF
-</button>
+
+  <button onClick={handleExportPDF}>
+    Export PDF
+  </button>
+
 </div>
+  
+      {/* FILTER + SORT */}
+      
 
 {/* 💰 TOTAL DUE */}
 <div style={{
@@ -745,9 +1484,32 @@ if (filterType === 'upcoming') {
   borderRadius: 10,
   fontWeight: 'bold'
 }}>
-  💰 Total Due: ₹{totalDueAmount}
+
+
+  💰 Total Due: {formatCurrency(totalDueAmount)}
 </div>
-  
+  <div style={{ marginTop: 20 }}>
+
+  <h3>Normal Payments</h3>
+  <div style={{
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+    gap: 12,
+    marginBottom: 20
+  }}>
+    {normalData.map(renderCard)}
+  </div>
+
+  <h3>Rotation Payments</h3>
+  <div style={{
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+    gap: 12
+  }}>
+    {rotationData.map(renderCard)}
+  </div>
+
+</div>
       {/* CARDS */}
       {filterType === 'due' && filteredData.length === 0 && (
         <div style={{
@@ -762,15 +1524,7 @@ if (filterType === 'upcoming') {
           🎉 No overdue payments
         </div>
       )}
-  
-  <div style={{
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-  gap: 12,
-  marginTop: 20
-}}>
-  {filteredData.map(renderCard)}
-</div>
+
   
     </div>
   );
